@@ -43,16 +43,18 @@ static void end_vlc_rendering(void *data, void *id, void *const *p_pixels)
     g_mutex_unlock(&video->mutex);
 }
 
-Video* add_new_video(libvlc_instance_t *libvlc, const char* src)
+Video* add_new_video(libvlc_instance_t *libvlc, const char* src, const char* protocol)
 {
     // Init struct
     Video* video = malloc(sizeof(Video));
 
     g_mutex_init(&video->mutex); 
 
-    libvlc_media_t* media = libvlc_media_new_path(libvlc, src); 
+    char *location = g_strdup_printf("%s://%s", protocol, src);
+    libvlc_media_t* media = libvlc_media_new_location(libvlc, location); 
     video->player = libvlc_media_player_new_from_media(media);
     libvlc_media_release(media);
+    g_free(location);
 
     video->needUpdate = false;
     video->x = rand()%WINDOW_WIDTH/2;
@@ -79,12 +81,22 @@ int main(int argc, char *argv[])
     // The video we're moving around
     Video* dragging = NULL;
 
-    libvlc_instance_t *libvlc = libvlc_new(3, (const char*[]){"--no-xlib", "--verbose", "-1"});
+    libvlc_instance_t *libvlc = libvlc_new(4, (const char*[]){"--verbose=-1", "--no-xlib", "--drop-late-frames", "--live-caching=0"});
     
     if(libvlc == NULL) {
         g_print("Something went wrong with libvlc init.\n");
         return -1;
     }
+
+/*  
+    
+    STARTING A WEBCAM STREAM: 
+
+    Video* new_video = add_new_video(libvlc, "/dev/video0:chroma=mjpg:width=1280:height:720:fps=30:live-caching=0", "v4l2");
+    video_list = g_list_append(video_list, new_video);
+    libvlc_media_player_play(new_video->player);
+
+*/
 
     // Create raylib windows
     InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "raylib + vlc");
@@ -100,7 +112,7 @@ int main(int argc, char *argv[])
 
             for(int i = 0; i < count; ++i)
             {
-                Video* new_video = add_new_video(libvlc, files[i]);
+                Video* new_video = add_new_video(libvlc, files[i], "file");
                 video_list = g_list_append(video_list, new_video);
                 libvlc_media_player_play(new_video->player);
             }
@@ -222,60 +234,73 @@ int main(int argc, char *argv[])
                 }
 
                 // First time this video is rendered? Checking size.
-                if (video->buffer == 0 && libvlc_media_player_get_state(video->player) == libvlc_Playing)
+                if (video->buffer == 0)
                 {
-                    libvlc_video_get_size(video->player, 0, &video->texW, &video->texH);
-
-                    // If we can't get width/height, we don't allocate anything
-                    if (video->texW > 0 && video->texH > 0)
+                    if (libvlc_media_player_get_state(video->player) == libvlc_Playing)
                     {
-                        // Video will be rendered in a 350x350px max
-                        if (video->texW > video->texH) video->scale = 350.0f/video->texW;
-                        else video->scale = 350.0f/video->texH;
+                        libvlc_video_get_size(video->player, 0, &video->texW, &video->texH);
 
-                        video->w = (int)(video->texW * video->scale);
-                        video->h = (int)(video->texH * video->scale);
+                        // If we can't get width/height, we don't allocate anything
+                        if (video->texW > 0 && video->texH > 0)
+                        {
+                            // Video will be rendered in a 350x350px max
+                            if (video->texW > video->texH) video->scale = 350.0f/video->texW;
+                            else video->scale = 350.0f/video->texH;
+
+                            video->w = (int)(video->texW * video->scale);
+                            video->h = (int)(video->texH * video->scale);
+                            
+                            libvlc_video_set_format(video->player, "RV24", video->texW,video->texH, video->texW*3);
+
+                            // Create a texture for raylibc
+                            g_mutex_lock(&video->mutex);
+
+                            /* This works on raylib master. Not yet release
+                            Image image = { NULL, video->texW, video->texH, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8 };
+                            video->texture = LoadTextureFromImage(image);
+                            UnloadImage(image);
+                            */
+
+                            // Workaround
+                            video->texture.id = rlLoadTexture(NULL,  video->texW, video->texH, PIXELFORMAT_UNCOMPRESSED_R8G8B8, 1);
+                            video->texture.width =  video->texW;
+                            video->texture.height = video->texH;
+                            video->texture.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8;
+                            video->texture.mipmaps = 1;
+
+                            // Create a buffer to store pixels
+                            video->buffer = MemAlloc(video->texW*video->texH*3); // Every pixel has 3 bytes (RGB)
+                            video->needUpdate = false;
+                            g_mutex_unlock(&video->mutex);
                         
-                        libvlc_video_set_format(video->player, "RV24", video->texW,video->texH, video->texW*3);
-
-                        // Create a texture for raylibc
-                        g_mutex_lock(&video->mutex);
-                        video->texture.id = rlLoadTexture(NULL,  video->texW, video->texH, PIXELFORMAT_UNCOMPRESSED_R8G8B8, 1);
-                        video->texture.width =  video->texW;
-                        video->texture.height = video->texH;
-                        video->texture.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8;
-                        video->texture.mipmaps = 1;
-
-                        // Create a buffer to store pixels
-                        video->buffer = MemAlloc(video->texW*video->texH*3); // Every pixel has 3 bytes (RGB)
-                        video->needUpdate = false;
-                        g_mutex_unlock(&video->mutex);  
+                        }
                     }
 
-                    continue; 
                 }
-
-                // The video on top has a blue border.
-                if (element->next == NULL) DrawRectangle(video->x-4, video->y-4, video->w+8, video->h+8, DARKBLUE);
-                else DrawRectangle(video->x-4, video->y-4, video->w+8, video->h+8, DARKGRAY);
-
-                // We have new data from vlc, let's update the texture!
-                if (video->needUpdate)
+                else 
                 {
-                    g_mutex_lock(&video->mutex);
-                    UpdateTexture(video->texture, video->buffer);
-                    video->needUpdate = false;
-                    g_mutex_unlock(&video->mutex);
+                    // The video on top has a blue border.
+                    if (element->next == NULL) DrawRectangle(video->x-4, video->y-4, video->w+8, video->h+8, DARKBLUE);
+                    else DrawRectangle(video->x-4, video->y-4, video->w+8, video->h+8, DARKGRAY);
+
+                    // We have new data from vlc, let's update the texture!
+                    if (video->needUpdate)
+                    {
+                        g_mutex_lock(&video->mutex);
+                        UpdateTexture(video->texture, video->buffer);
+                        video->needUpdate = false;
+                        g_mutex_unlock(&video->mutex);
+                    }
+
+                    // Draw the current frame
+                    DrawTextureEx(video->texture, (Vector2){video->x, video->y}, 0, video->scale, WHITE);
+
+                    // Draw the seek bar
+                    double p = libvlc_media_player_get_position(video->player);
+                    DrawRectangle(video->x + 10, video->y + video->h - 20, video->w-20, 10, LIGHTGRAY);
+                    DrawRectangle(video->x + 12, video->y + video->h - 18, (int)((video->w-24)*p), 6, BLUE);
                 }
 
-                // Draw the current frame
-                DrawTextureEx(video->texture, (Vector2){video->x, video->y}, 0, video->scale, WHITE);
-
-                // Draw the seek bar
-                double p = libvlc_media_player_get_position(video->player);
-                DrawRectangle(video->x + 10, video->y + video->h - 20, video->w-20, 10, LIGHTGRAY);
-                DrawRectangle(video->x + 12, video->y + video->h - 18, (int)((video->w-24)*p), 6, BLUE);
-                
                 element = element->next;
             }
             

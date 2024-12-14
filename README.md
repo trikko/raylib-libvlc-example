@@ -4,6 +4,8 @@ I bet you have been trying to render and control a video with raylib for a long 
 
 Don't you think you should at least buy me a [beer](https://paypal.me/andreafontana/5)?
 
+See also: [raylib-ffmpeg-video](https://github.com/trikko/raylib-ffmpeg-video)
+
 ## What's this?
 ![](https://github.com/trikko/raylib-libvlc-example/blob/main/raylib-libvlc-example.gif?raw=true)
 

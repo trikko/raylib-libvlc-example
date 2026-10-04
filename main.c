@@ -6,6 +6,9 @@
 // Used for lists and thread
 #include <glib.h>
 
+#include <stdlib.h>
+#include <string.h>
+
 #define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
 
@@ -21,6 +24,7 @@ typedef struct {
     Texture2D   texture;    // Here we draw the pixel from vlc
     uint8_t*    buffer;     // Pixel received from vlc
     bool        needUpdate; // Texture is changed, we need to reload 
+    bool        needTexture;// Frame size is known (or changed), we need a new texture
 
     libvlc_media_player_t *player;  // The mediaplayer
 } Video;
@@ -43,6 +47,47 @@ static void end_vlc_rendering(void *data, void *id, void *const *p_pixels)
     g_mutex_unlock(&video->mutex);
 }
 
+static unsigned setup_vlc_format(void **opaque, char *chroma, unsigned *width, unsigned *height, unsigned *pitches, unsigned *lines)
+{
+    // Called by vlc (on its own thread) before the first frame, and again after every stop/play.
+    // We ask for RGB 24 bit at the original size, and we allocate the buffer only if the size changed.
+    Video* video = (Video*)*opaque;
+    memcpy(chroma, "RV24", 4);
+
+    g_mutex_lock(&video->mutex);
+
+    if (video->buffer == NULL || video->texW != *width || video->texH != *height)
+    {
+        video->texW = *width;
+        video->texH = *height;
+
+        // Video will be rendered in a 350x350px max
+        if (video->texW > video->texH) video->scale = 350.0f/video->texW;
+        else video->scale = 350.0f/video->texH;
+
+        video->w = (int)(video->texW * video->scale);
+        video->h = (int)(video->texH * video->scale);
+
+        // Every pixel has 3 bytes (RGB). The texture is (re)created on the main thread.
+        MemFree(video->buffer);
+        video->buffer = MemAlloc(video->texW*video->texH*3);
+        video->needTexture = true;
+        video->needUpdate = false;
+    }
+
+    g_mutex_unlock(&video->mutex);
+
+    pitches[0] = video->texW * 3;
+    lines[0] = video->texH;
+
+    return 1; // Number of picture buffers
+}
+
+static void cleanup_vlc_format(void *opaque)
+{
+    // Nothing to do: the buffer is reused if the video is restarted, and freed by release_video()
+}
+
 Video* add_new_video(libvlc_instance_t *libvlc, const char* src, const char* protocol)
 {
     // Init struct
@@ -62,13 +107,30 @@ Video* add_new_video(libvlc_instance_t *libvlc, const char* src, const char* pro
 
     video->texW = 0;
     video->texH = 0;
-    video->buffer = 0;
+    video->w = 0;
+    video->h = 0;
+    video->buffer = NULL;
     video->texture.id = 0;
+    video->needTexture = false;
 
-    // Set callback for frame drawing
+    // Set callbacks for frame format and drawing
     libvlc_video_set_callbacks(video->player, begin_vlc_rendering, end_vlc_rendering, NULL, video);
+    libvlc_video_set_format_callbacks(video->player, setup_vlc_format, cleanup_vlc_format);
     
     return video;
+}
+
+void release_video(Video* video)
+{
+    // Stop the player first: after that vlc won't call our callbacks anymore,
+    // so it's safe to free what they use.
+    libvlc_media_player_stop(video->player);
+    libvlc_media_player_release(video->player);
+
+    if (video->texture.id != 0) UnloadTexture(video->texture);
+    MemFree(video->buffer);
+    g_mutex_clear(&video->mutex);
+    free(video);
 }
 
 
@@ -107,17 +169,16 @@ int main(int argc, char *argv[])
         // Drop a file to load it.
         if (IsFileDropped())
         {
-            int count;
-            char** files = GetDroppedFiles(&count);
+            FilePathList files = LoadDroppedFiles();
 
-            for(int i = 0; i < count; ++i)
+            for(unsigned int i = 0; i < files.count; ++i)
             {
-                Video* new_video = add_new_video(libvlc, files[i], "file");
+                Video* new_video = add_new_video(libvlc, files.paths[i], "file");
                 video_list = g_list_append(video_list, new_video);
                 libvlc_media_player_play(new_video->player);
             }
 
-            ClearDroppedFiles();
+            UnloadDroppedFiles(files);
         }
 
         if (IsKeyPressed(KEY_SPACE))
@@ -142,6 +203,19 @@ int main(int argc, char *argv[])
             }
         }
 
+        if (IsKeyPressed(KEY_C))
+        {
+            // Close the video on top
+            GList* element = g_list_last(video_list);
+            if (element != NULL)
+            {
+                Video* video = element->data;
+                if (dragging == video) dragging = NULL;
+                video_list = g_list_delete_link(video_list, element);
+                release_video(video);
+            }
+        }
+
 
         if (IsMouseButtonUp(MOUSE_BUTTON_LEFT)) dragging = NULL;
         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT))
@@ -160,7 +234,6 @@ int main(int argc, char *argv[])
                 Vector2 mouse_position = GetMousePosition();
 
                 GList* element = g_list_last(video_list);
-                GList* first = g_list_first(video_list);
                 
                 while(element != NULL)
                 {
@@ -233,51 +306,20 @@ int main(int argc, char *argv[])
                     libvlc_media_player_play(video->player);
                 }
 
-                // First time this video is rendered? Checking size.
-                if (video->buffer == 0)
+                // Frame size is known (or changed)? Create the texture for raylib.
+                g_mutex_lock(&video->mutex);
+                if (video->needTexture)
                 {
-                    if (libvlc_media_player_get_state(video->player) == libvlc_Playing)
-                    {
-                        libvlc_video_get_size(video->player, 0, &video->texW, &video->texH);
+                    if (video->texture.id != 0) UnloadTexture(video->texture);
 
-                        // If we can't get width/height, we don't allocate anything
-                        if (video->texW > 0 && video->texH > 0)
-                        {
-                            // Video will be rendered in a 350x350px max
-                            if (video->texW > video->texH) video->scale = 350.0f/video->texW;
-                            else video->scale = 350.0f/video->texH;
-
-                            video->w = (int)(video->texW * video->scale);
-                            video->h = (int)(video->texH * video->scale);
-                            
-                            libvlc_video_set_format(video->player, "RV24", video->texW,video->texH, video->texW*3);
-
-                            // Create a texture for raylibc
-                            g_mutex_lock(&video->mutex);
-
-                            /* This works on raylib master. Not yet release
-                            Image image = { NULL, video->texW, video->texH, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8 };
-                            video->texture = LoadTextureFromImage(image);
-                            UnloadImage(image);
-                            */
-
-                            // Workaround
-                            video->texture.id = rlLoadTexture(NULL,  video->texW, video->texH, PIXELFORMAT_UNCOMPRESSED_R8G8B8, 1);
-                            video->texture.width =  video->texW;
-                            video->texture.height = video->texH;
-                            video->texture.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8;
-                            video->texture.mipmaps = 1;
-
-                            // Create a buffer to store pixels
-                            video->buffer = MemAlloc(video->texW*video->texH*3); // Every pixel has 3 bytes (RGB)
-                            video->needUpdate = false;
-                            g_mutex_unlock(&video->mutex);
-                        
-                        }
-                    }
-
+                    Image image = { NULL, video->texW, video->texH, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8 };
+                    video->texture = LoadTextureFromImage(image);
+                    video->needTexture = false;
                 }
-                else 
+                g_mutex_unlock(&video->mutex);
+
+                // Nothing to show until the first frame size is known.
+                if (video->texture.id != 0)
                 {
                     // The video on top has a blue border.
                     if (element->next == NULL) DrawRectangle(video->x-4, video->y-4, video->w+8, video->h+8, DARKBLUE);
@@ -306,7 +348,7 @@ int main(int argc, char *argv[])
             
             // Draw info
             DrawRectangle(0,600-40,800,40, LIGHTGRAY);
-            DrawText("SPACE : PLAY/PAUSE   R : RESTART", 200, 600-30, 20, BLACK);
+            DrawText("SPACE : PLAY/PAUSE   R : RESTART   C : CLOSE", 150, 600-30, 20, BLACK);
             DrawFPS(30,600-30);
 
         EndDrawing();
@@ -316,19 +358,16 @@ int main(int argc, char *argv[])
     GList* element = g_list_first(video_list);
     while(element != NULL)
     {
-        Video *video = element->data;
+        release_video(element->data);
         element = element->next;
-
-        libvlc_media_player_stop(video->player);
-        libvlc_media_player_release(video->player);
-
-        UnloadTexture(video->texture);
-        g_mutex_clear(&video->mutex);
-        MemFree(video->buffer);
     }
 
     g_list_free(video_list);
+
+    // Release libvlc only after all the players.
     libvlc_release(libvlc);
+
+    CloseWindow();
     
     return 0;
 }

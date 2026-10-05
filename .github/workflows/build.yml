@@ -31,6 +31,23 @@ jobs:
       - name: Build
         run: make
 
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install pkg-config raylib glib
+          brew install --cask vlc
+          ls /Applications/VLC.app/Contents/MacOS /Applications/VLC.app/Contents/MacOS/include/vlc
+
+      - name: Build
+        run: make
+
+      - name: Check linking
+        run: otool -L raylib-libvlc-example
+
   windows:
     runs-on: windows-latest
     defaults:

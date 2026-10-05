@@ -15,6 +15,15 @@ See also: [raylib-ffmpeg-video](https://github.com/trikko/raylib-ffmpeg-video)
  - Install libvlc 3.x and glib. On debian/ubuntu/etc.: ```sudo apt-get install libvlc-dev libglib2.0-dev```
  - Run ```make```
 
+### macOS
+With [Homebrew](https://brew.sh/). libvlc comes with VLC.app:
+```
+brew install pkg-config raylib glib
+brew install --cask vlc
+make
+```
+If VLC.app is not in `/Applications`, use `make VLC_DIR=/path/to/VLC.app/Contents/MacOS`.
+
 ### Windows
 Use [MSYS2](https://www.msys2.org/). From the UCRT64 shell:
 ```

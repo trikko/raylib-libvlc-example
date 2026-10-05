@@ -1,3 +1,6 @@
 .dub/
 raylib-libvlc-example
 raylib-libvlc-example.exe
+
+# D sources (the root .gitignore excludes *.d, C dependency files)
+!*.d

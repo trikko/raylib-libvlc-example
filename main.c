@@ -116,8 +116,9 @@ Video* add_new_video(libvlc_instance_t *libvlc, const char* src, const char* pro
     libvlc_media_release(media);
 
     video->needUpdate = false;
-    video->x = rand()%WINDOW_WIDTH/2;
-    video->y = rand()%WINDOW_HEIGHT/2;
+    // Random position, away from the edges and the info bar (a video is at most 350x350px)
+    video->x = 20 + rand() % (WINDOW_WIDTH - 350 - 40);
+    video->y = 20 + rand() % (WINDOW_HEIGHT - 40 - 350 - 40);
 
     video->w = 0;
     video->h = 0;
@@ -179,26 +180,36 @@ int main(int argc, char *argv[])
 
     // Create raylib windows
     InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "raylib + vlc");
+    if (!IsWindowReady())
+    {
+        libvlc_release(libvlc);
+        return -1;
+    }
     SetTargetFPS(60);
 
     // Videos can be passed on the command line too.
-    // With --screenshot <file> we save a screenshot and quit as soon as every video is playing (used by the CI).
+    // With --screenshot <file> we save a screenshot as soon as every video is playing, and quit 3 seconds later
+    // (used by the CI, that meanwhile captures the whole screen).
     const char* screenshot = NULL;
     int exit_code = 0;
-    bool quit = false;
+    double quit_at = 0;
 
     for (int i = 1; i < argc; ++i)
     {
         if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) screenshot = argv[++i];
         else
         {
+            // Two columns, slightly staggered, so that every video is visible
+            int n = g_list_length(video_list);
             Video* new_video = add_new_video(libvlc, argv[i], "file");
+            new_video->x = 30 + (n % 2) * 390 + (n / 2 % 5) * 20;
+            new_video->y = 40 + (n % 2) * 140 + (n / 2 % 5) * 20;
             video_list = g_list_append(video_list, new_video);
             libvlc_media_player_play(new_video->player);
         }
     }
 
-    while (!WindowShouldClose() && !quit) {
+    while (!WindowShouldClose() && (quit_at == 0 || GetTime() < quit_at)) {
 
         // Drop a file to load it.
         if (IsFileDropped())
@@ -396,9 +407,10 @@ int main(int argc, char *argv[])
             // Draw info
             DrawRectangle(0,600-40,800,40, LIGHTGRAY);
             DrawText("SPACE : PLAY/PAUSE   R : RESTART   C : CLOSE", 150, 600-30, 20, BLACK);
-            DrawFPS(30,600-30);
+            // Not in the CI screenshots: there's no GPU, so the FPS would be misleading
+            if (screenshot == NULL) DrawFPS(30,600-30);
 
-            if (screenshot != NULL)
+            if (screenshot != NULL && quit_at == 0)
             {
                 // About one second of video for each one. If it doesn't happen, the screenshot helps to understand why.
                 bool playing = video_list != NULL;
@@ -411,7 +423,7 @@ int main(int argc, char *argv[])
                     TakeScreenshot(screenshot);
                     if (!playing) g_print("Timeout: videos are not playing.\n");
                     exit_code = playing ? 0 : 1;
-                    quit = true;
+                    quit_at = GetTime() + 3;
                 }
             }
 

@@ -36,6 +36,11 @@ make
 ```
 If VLC.app is not in `/Applications`, use `make VLC_DIR=/path/to/VLC.app/Contents/MacOS`.
 
+libvlc must be told where VLC.app keeps its plugins:
+```
+export VLC_PLUGIN_PATH=/Applications/VLC.app/Contents/MacOS/plugins
+```
+
 ### Windows
 Use [MSYS2](https://www.msys2.org/). From the UCRT64 shell:
 ```
@@ -49,11 +54,14 @@ make
  - `SPACE` play/pause, `R` restart, `C` close the video on top.
 
 ## Screenshots from CI
-Taken automatically on every push by the [build workflow](.github/workflows/build.yml).
+Taken by the automated build tests: on every push the [build workflow](.github/workflows/build.yml) builds
+the example on each OS, plays two test videos and captures the screen.
 
 | Linux | macOS | Windows |
 |---|---|---|
-| ![](https://raw.githubusercontent.com/trikko/raylib-libvlc-example/screenshots/screenshot-linux.png) | ![](https://raw.githubusercontent.com/trikko/raylib-libvlc-example/screenshots/screenshot-macos.png) | ![](https://raw.githubusercontent.com/trikko/raylib-libvlc-example/screenshots/screenshot-windows.png) |
+| ![](https://raw.githubusercontent.com/trikko/raylib-libvlc-example/screenshots/screen-linux.png) | ![](https://raw.githubusercontent.com/trikko/raylib-libvlc-example/screenshots/screen-macos.png) | ![](https://raw.githubusercontent.com/trikko/raylib-libvlc-example/screenshots/screen-windows.png) |
+
+The test videos are clips from [Big Buck Bunny](https://peach.blender.org/), (c) Blender Foundation, [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
 
 ## See also
  - [raylib-ffmpeg-video](https://github.com/trikko/raylib-ffmpeg-video): the same with ffmpeg

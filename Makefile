@@ -24,7 +24,7 @@ TARGET := $(TARGET).exe
 endif
 
 $(TARGET): main.c
-	$(CC) $(CFLAGS) $< $(LDLIBS) -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $< $(LDLIBS) -o $@
 
 clean:
 	rm -f $(TARGET)

@@ -19,7 +19,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake pkg-config libvlc-dev libglib2.0-dev \
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev \
-            vlc-plugin-base xvfb libgl1-mesa-dri
+            vlc-plugin-base xvfb libgl1-mesa-dri imagemagick mutter
 
       - name: Build raylib
         run: |
@@ -34,13 +34,16 @@ jobs:
 
       - name: Run
         timeout-minutes: 2
-        run: xvfb-run -a -s "-screen 0 1024x768x24" ./raylib-libvlc-example --screenshot screenshot-linux.png tests/testsrc.mp4 tests/testsrc.mp4
+        # mutter (GNOME's window manager) draws the window decorations
+        run: xvfb-run -a -s "-screen 0 1024x768x24" bash -c "dbus-run-session mutter --x11 --replace & sleep 5; tests/run.sh linux"
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: screenshot-linux
-          path: screenshot-linux.png
+          path: |
+            window-linux.png
+            screen-linux.png
 
   macos:
     runs-on: macos-latest
@@ -49,21 +52,33 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install pkg-config raylib glib
+          brew install pkg-config glib
           brew install --cask vlc
 
+      # The runner has no GPU: GLFW must accept Apple's software renderer
+      - name: Build raylib
+        run: |
+          git clone --depth 1 --branch "$RAYLIB_VERSION" https://github.com/raysan5/raylib.git /tmp/raylib
+          sed -i '' '/NSOpenGLPFAAccelerated/d' /tmp/raylib/src/external/glfw/src/nsgl_context.m
+          cmake -S /tmp/raylib -B /tmp/raylib/build -DBUILD_SHARED_LIBS=ON -DBUILD_EXAMPLES=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$HOME/raylib
+          cmake --build /tmp/raylib/build -j
+          cmake --install /tmp/raylib/build
+          echo "PKG_CONFIG_PATH=$HOME/raylib/lib/pkgconfig" >> $GITHUB_ENV
+
       - name: Build
-        run: make
+        run: make LDFLAGS="-Wl,-rpath,$HOME/raylib/lib"
 
       - name: Run
         timeout-minutes: 2
-        run: ./raylib-libvlc-example --screenshot screenshot-macos.png tests/testsrc.mp4 tests/testsrc.mp4
+        run: VLC_PLUGIN_PATH=/Applications/VLC.app/Contents/MacOS/plugins tests/run.sh macos
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: screenshot-macos
-          path: screenshot-macos.png
+          path: |
+            window-macos.png
+            screen-macos.png
 
   windows:
     runs-on: windows-latest
@@ -89,13 +104,16 @@ jobs:
 
       - name: Run
         timeout-minutes: 2
-        run: VLC_PLUGIN_PATH=$MINGW_PREFIX/lib/vlc/plugins ./raylib-libvlc-example --screenshot screenshot-windows.png tests/testsrc.mp4 tests/testsrc.mp4
+        # llvmpipe: Mesa's default here (D3D12 on top of WARP) doesn't work
+        run: GALLIUM_DRIVER=llvmpipe VLC_PLUGIN_PATH=$MINGW_PREFIX/lib/vlc/plugins tests/run.sh windows
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: screenshot-windows
-          path: screenshot-windows.png
+          path: |
+            window-windows.png
+            screen-windows.png
 
   # Screenshots are published on the "screenshots" branch, shown in the README
   publish:
@@ -114,6 +132,10 @@ jobs:
       - name: Push to the screenshots branch
         working-directory: screenshots
         run: |
+          # If the OS couldn't capture the screen, use the screenshot taken by raylib
+          for os in linux macos windows; do
+            [ -f screen-$os.png ] || [ ! -f window-$os.png ] || cp window-$os.png screen-$os.png
+          done
           git init -q -b screenshots
           git add .
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \

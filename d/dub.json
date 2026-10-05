@@ -1,0 +1,7 @@
+{
+	"name": "raylib-libvlc-example",
+	"description": "Play videos in raylib with libvlc: the D version of the example.",
+	"license": "BSD-3-Clause",
+	"targetType": "executable",
+	"libs": ["raylib", "vlc"]
+}

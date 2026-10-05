@@ -53,6 +53,15 @@ make
  - Drag a video to move it, click on its bar to seek.
  - `SPACE` play/pause, `R` restart, `C` close the video on top.
 
+## D version
+The same example written in [D](https://dlang.org/) is in [`d/`](d/). It uses the C headers directly
+through [ImportC](https://dlang.org/spec/importc.html), with no bindings to write or install.
+```
+cd d
+dub build
+./raylib-libvlc-example
+```
+
 ## Screenshots from CI
 Taken by the automated build tests: on every push the [build workflow](.github/workflows/build.yml) builds
 the example on each OS, plays two test videos and captures the screen.

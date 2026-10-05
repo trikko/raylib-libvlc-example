@@ -27,6 +27,7 @@ typedef struct {
     uint8_t*    front;      // Uploaded to the texture (main thread only)
     bool        needUpdate; // A new frame is ready
     bool        needTexture;// Frame size is known (or changed), we need a new texture
+    int         frames;     // Frames shown so far
 
     libvlc_media_player_t *player;  // The mediaplayer
 } Video;
@@ -101,11 +102,18 @@ Video* add_new_video(libvlc_instance_t *libvlc, const char* src, const char* pro
 
     g_mutex_init(&video->mutex); 
 
-    char *location = g_strdup_printf("%s://%s", protocol, src);
-    libvlc_media_t* media = libvlc_media_new_location(libvlc, location); 
+    // Local files are opened by path: vlc builds a valid uri on every OS
+    libvlc_media_t* media;
+    if (strcmp(protocol, "file") == 0) media = libvlc_media_new_path(libvlc, src);
+    else
+    {
+        char *location = g_strdup_printf("%s://%s", protocol, src);
+        media = libvlc_media_new_location(libvlc, location);
+        g_free(location);
+    }
+
     video->player = libvlc_media_player_new_from_media(media);
     libvlc_media_release(media);
-    g_free(location);
 
     video->needUpdate = false;
     video->x = rand()%WINDOW_WIDTH/2;
@@ -118,6 +126,7 @@ Video* add_new_video(libvlc_instance_t *libvlc, const char* src, const char* pro
     video->front = NULL;
     video->texture.id = 0;
     video->needTexture = false;
+    video->frames = 0;
 
     // Set callbacks for frame format and drawing
     libvlc_video_set_callbacks(video->player, begin_vlc_rendering, end_vlc_rendering, NULL, video);
@@ -172,7 +181,24 @@ int main(int argc, char *argv[])
     InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "raylib + vlc");
     SetTargetFPS(60);
 
-    while (!WindowShouldClose()) {
+    // Videos can be passed on the command line too.
+    // With --screenshot <file> we save a screenshot and quit as soon as every video is playing (used by the CI).
+    const char* screenshot = NULL;
+    int exit_code = 0;
+    bool quit = false;
+
+    for (int i = 1; i < argc; ++i)
+    {
+        if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) screenshot = argv[++i];
+        else
+        {
+            Video* new_video = add_new_video(libvlc, argv[i], "file");
+            video_list = g_list_append(video_list, new_video);
+            libvlc_media_player_play(new_video->player);
+        }
+    }
+
+    while (!WindowShouldClose() && !quit) {
 
         // Drop a file to load it.
         if (IsFileDropped())
@@ -349,7 +375,11 @@ int main(int argc, char *argv[])
                     else DrawRectangle(video->x-4, video->y-4, video->w+8, video->h+8, DARKGRAY);
 
                     // We have new data from vlc, let's update the texture! No lock: vlc never touches the front buffer.
-                    if (newFrame) UpdateTexture(video->texture, video->front);
+                    if (newFrame)
+                    {
+                        UpdateTexture(video->texture, video->front);
+                        video->frames++;
+                    }
 
                     // Draw the current frame
                     DrawTexture(video->texture, video->x, video->y, WHITE);
@@ -367,6 +397,23 @@ int main(int argc, char *argv[])
             DrawRectangle(0,600-40,800,40, LIGHTGRAY);
             DrawText("SPACE : PLAY/PAUSE   R : RESTART   C : CLOSE", 150, 600-30, 20, BLACK);
             DrawFPS(30,600-30);
+
+            if (screenshot != NULL)
+            {
+                // About one second of video for each one. If it doesn't happen, the screenshot helps to understand why.
+                bool playing = video_list != NULL;
+                for (GList* e = g_list_first(video_list); e != NULL; e = e->next)
+                    if (((Video*)e->data)->frames < 30) playing = false;
+
+                if (playing || GetTime() > 20)
+                {
+                    rlDrawRenderBatchActive(); // Flush what we've drawn so far, or the screenshot will be empty
+                    TakeScreenshot(screenshot);
+                    if (!playing) g_print("Timeout: videos are not playing.\n");
+                    exit_code = playing ? 0 : 1;
+                    quit = true;
+                }
+            }
 
         EndDrawing();
     }
@@ -386,5 +433,5 @@ int main(int argc, char *argv[])
 
     CloseWindow();
     
-    return 0;
+    return exit_code;
 }

@@ -1,14 +1,26 @@
-# Hey!
+# raylib + libvlc: play videos in raylib
+
+[![build](https://github.com/trikko/raylib-libvlc-example/actions/workflows/build.yml/badge.svg)](https://github.com/trikko/raylib-libvlc-example/actions/workflows/build.yml)
+
+A minimal C example that plays videos inside a [raylib](https://github.com/raysan5/raylib) window
+using [libvlc](https://www.videolan.org/vlc/libvlc.html): every format VLC can open (mp4, mkv, webm, avi, ...),
+network streams and webcams, rendered to a raylib texture. Works on Linux, macOS and Windows.
 
 I bet you have been trying to render and control a video with raylib for a long long time.
-
 Don't you think you should at least buy me a [beer](https://paypal.me/andreafontana/5)?
 
-See also: [raylib-ffmpeg-video](https://github.com/trikko/raylib-ffmpeg-video)
+![](raylib-libvlc-example.gif)
 
-## What's this?
-![](https://github.com/trikko/raylib-libvlc-example/blob/main/raylib-libvlc-example.gif?raw=true)
+## Features
+ - Many videos at once, each one draggable, with play/pause, restart and seek
+ - Drag & drop files on the window, or pass them on the command line
+ - Streams and webcams too (see the comment in `main.c`)
+ - Single C file, no engine or framework
 
+## How it works
+libvlc decodes the video on its own threads and writes each frame, already scaled, into a memory buffer
+through `libvlc_video_set_callbacks()`. Frames are triple buffered: the main thread picks the latest one
+and uploads it with `UpdateTexture()`, holding the lock only to swap pointers.
 
 ## How to build
  - Install [raylib](https://github.com/raysan5/raylib) 4.2 or newer. Build instructions [here](https://github.com/raysan5/raylib#build-and-installation).
@@ -32,6 +44,16 @@ make
 ```
 
 ## How to use
- - Drop one or more videos on the window.
+ - Drop one or more videos on the window, or pass them on the command line.
  - Drag a video to move it, click on its bar to seek.
  - `SPACE` play/pause, `R` restart, `C` close the video on top.
+
+## Screenshots from CI
+Taken automatically on every push by the [build workflow](.github/workflows/build.yml).
+
+| Linux | macOS | Windows |
+|---|---|---|
+| ![](https://raw.githubusercontent.com/trikko/raylib-libvlc-example/screenshots/screenshot-linux.png) | ![](https://raw.githubusercontent.com/trikko/raylib-libvlc-example/screenshots/screenshot-macos.png) | ![](https://raw.githubusercontent.com/trikko/raylib-libvlc-example/screenshots/screenshot-windows.png) |
+
+## See also
+ - [raylib-ffmpeg-video](https://github.com/trikko/raylib-ffmpeg-video): the same with ffmpeg

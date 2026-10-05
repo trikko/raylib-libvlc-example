@@ -18,7 +18,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake pkg-config libvlc-dev libglib2.0-dev \
-            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev \
+            vlc-plugin-base xvfb libgl1-mesa-dri
 
       - name: Build raylib
         run: |
@@ -31,6 +32,16 @@ jobs:
       - name: Build
         run: make
 
+      - name: Run
+        timeout-minutes: 2
+        run: xvfb-run -a -s "-screen 0 1024x768x24" ./raylib-libvlc-example --screenshot screenshot-linux.png tests/testsrc.mp4 tests/testsrc.mp4
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshot-linux
+          path: screenshot-linux.png
+
   macos:
     runs-on: macos-latest
     steps:
@@ -40,13 +51,19 @@ jobs:
         run: |
           brew install pkg-config raylib glib
           brew install --cask vlc
-          ls /Applications/VLC.app/Contents/MacOS /Applications/VLC.app/Contents/MacOS/include/vlc
 
       - name: Build
         run: make
 
-      - name: Check linking
-        run: otool -L raylib-libvlc-example
+      - name: Run
+        timeout-minutes: 2
+        run: ./raylib-libvlc-example --screenshot screenshot-macos.png tests/testsrc.mp4 tests/testsrc.mp4
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshot-macos
+          path: screenshot-macos.png
 
   windows:
     runs-on: windows-latest
@@ -61,12 +78,44 @@ jobs:
           msystem: UCRT64
           update: true
           install: make
-          pacboy: gcc:p pkgconf:p raylib:p glib2:p vlc:p
+          pacboy: gcc:p pkgconf:p raylib:p glib2:p vlc:p mesa:p
 
       - name: Build
         run: make
 
+      # The runner has no OpenGL 3.3: use Mesa's software renderer, placed next to the exe
+      - name: Setup OpenGL
+        run: cp $MINGW_PREFIX/bin/opengl32.dll $MINGW_PREFIX/bin/libgallium_wgl.dll .
+
+      - name: Run
+        timeout-minutes: 2
+        run: VLC_PLUGIN_PATH=$MINGW_PREFIX/lib/vlc/plugins ./raylib-libvlc-example --screenshot screenshot-windows.png tests/testsrc.mp4 tests/testsrc.mp4
+
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: raylib-libvlc-example-windows
-          path: raylib-libvlc-example.exe
+          name: screenshot-windows
+          path: screenshot-windows.png
+
+  # Screenshots are published on the "screenshots" branch, shown in the README
+  publish:
+    needs: [linux, macos, windows]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: screenshot-*
+          merge-multiple: true
+          path: screenshots
+
+      - name: Push to the screenshots branch
+        working-directory: screenshots
+        run: |
+          git init -q -b screenshots
+          git add .
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Screenshots from ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" screenshots

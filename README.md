@@ -12,8 +12,15 @@ See also: [raylib-ffmpeg-video](https://github.com/trikko/raylib-ffmpeg-video)
 
 ## How to build
  - Install [raylib](https://github.com/raysan5/raylib) 4.2 or newer. Build instructions [here](https://github.com/raysan5/raylib#build-and-installation).
- - Install libvlc 3.x. On debian/ubuntu/etc.: ```sudo apt-get install libvlc-dev```
- - Run ```./build.sh```
+ - Install libvlc 3.x and glib. On debian/ubuntu/etc.: ```sudo apt-get install libvlc-dev libglib2.0-dev```
+ - Run ```make```
+
+### Windows
+Use [MSYS2](https://www.msys2.org/). From the UCRT64 shell:
+```
+pacman -S make mingw-w64-ucrt-x86_64-{gcc,pkgconf,raylib,glib2,vlc}
+make
+```
 
 ## How to use
  - Drop one or more videos on the window.

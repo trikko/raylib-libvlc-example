@@ -14,16 +14,18 @@
 
 
 // A video we show.
+// Frames are triple buffered: vlc writes into "back", a finished frame is swapped into "ready",
+// and the main thread swaps "ready" with "front" to upload it. The mutex is held only for the swaps.
 typedef struct {
     int         x,y;        // Position
-    uint32_t    texW,texH;  // Frame width & height
-    uint32_t    w,h;        // Render width & height
-    float       scale;      // Render scale;
+    uint32_t    w,h;        // Frame size: vlc scales the video for us
 
-    GMutex      mutex;      // Mutex to begin_vlc_rendering texture on drawing
+    GMutex      mutex;      // Protects the buffer swaps and the flags below
     Texture2D   texture;    // Here we draw the pixel from vlc
-    uint8_t*    buffer;     // Pixel received from vlc
-    bool        needUpdate; // Texture is changed, we need to reload 
+    uint8_t*    back;       // vlc is drawing here (vlc thread only)
+    uint8_t*    ready;      // Last complete frame
+    uint8_t*    front;      // Uploaded to the texture (main thread only)
+    bool        needUpdate; // A new frame is ready
     bool        needTexture;// Frame size is known (or changed), we need a new texture
 
     libvlc_media_player_t *player;  // The mediaplayer
@@ -31,18 +33,21 @@ typedef struct {
 
 static void *begin_vlc_rendering(void *data, void **p_pixels) 
 {
-    // Lock pixels. Wait for vlc to draw a frame inside.
+    // The back buffer belongs to vlc: no need to lock.
     Video* video = (Video*)data;
-    g_mutex_lock(&video->mutex);
-    *p_pixels = video->buffer;
+    *p_pixels = video->back;
 
     return NULL; // Not used
 }
 
 static void end_vlc_rendering(void *data, void *id, void *const *p_pixels) 
 {
-    // Frame drawn. Unlock pixels.
+    // Frame drawn. It becomes the ready one.
     Video* video = (Video*)data;
+    g_mutex_lock(&video->mutex);
+    uint8_t* tmp = video->ready;
+    video->ready = video->back;
+    video->back = tmp;
     video->needUpdate = true;
     g_mutex_unlock(&video->mutex);
 }
@@ -50,35 +55,36 @@ static void end_vlc_rendering(void *data, void *id, void *const *p_pixels)
 static unsigned setup_vlc_format(void **opaque, char *chroma, unsigned *width, unsigned *height, unsigned *pitches, unsigned *lines)
 {
     // Called by vlc (on its own thread) before the first frame, and again after every stop/play.
-    // We ask for RGB 24 bit at the original size, and we allocate the buffer only if the size changed.
+    // We ask for RGB 24 bit, already scaled to fit 350x350px: much less data to move than the original size.
     Video* video = (Video*)*opaque;
     memcpy(chroma, "RV24", 4);
 
+    float scale = (*width > *height) ? 350.0f / *width : 350.0f / *height;
+    uint32_t w = (uint32_t)(*width * scale);
+    uint32_t h = (uint32_t)(*height * scale);
+
     g_mutex_lock(&video->mutex);
 
-    if (video->buffer == NULL || video->texW != *width || video->texH != *height)
+    if (video->back == NULL || video->w != w || video->h != h)
     {
-        video->texW = *width;
-        video->texH = *height;
+        video->w = w;
+        video->h = h;
 
-        // Video will be rendered in a 350x350px max
-        if (video->texW > video->texH) video->scale = 350.0f/video->texW;
-        else video->scale = 350.0f/video->texH;
-
-        video->w = (int)(video->texW * video->scale);
-        video->h = (int)(video->texH * video->scale);
-
-        // Every pixel has 3 bytes (RGB). The texture is (re)created on the main thread.
-        MemFree(video->buffer);
-        video->buffer = MemAlloc(video->texW*video->texH*3);
+        // Every pixel has 3 bytes (RGB). The front buffer and the texture are (re)created on the main thread.
+        MemFree(video->back);
+        MemFree(video->ready);
+        video->back = MemAlloc(w*h*3);
+        video->ready = MemAlloc(w*h*3);
         video->needTexture = true;
         video->needUpdate = false;
     }
 
     g_mutex_unlock(&video->mutex);
 
-    pitches[0] = video->texW * 3;
-    lines[0] = video->texH;
+    *width = w;
+    *height = h;
+    pitches[0] = w * 3;
+    lines[0] = h;
 
     return 1; // Number of picture buffers
 }
@@ -105,11 +111,11 @@ Video* add_new_video(libvlc_instance_t *libvlc, const char* src, const char* pro
     video->x = rand()%WINDOW_WIDTH/2;
     video->y = rand()%WINDOW_HEIGHT/2;
 
-    video->texW = 0;
-    video->texH = 0;
     video->w = 0;
     video->h = 0;
-    video->buffer = NULL;
+    video->back = NULL;
+    video->ready = NULL;
+    video->front = NULL;
     video->texture.id = 0;
     video->needTexture = false;
 
@@ -128,7 +134,9 @@ void release_video(Video* video)
     libvlc_media_player_release(video->player);
 
     if (video->texture.id != 0) UnloadTexture(video->texture);
-    MemFree(video->buffer);
+    MemFree(video->back);
+    MemFree(video->ready);
+    MemFree(video->front);
     g_mutex_clear(&video->mutex);
     free(video);
 }
@@ -306,16 +314,31 @@ int main(int argc, char *argv[])
                     libvlc_media_player_play(video->player);
                 }
 
-                // Frame size is known (or changed)? Create the texture for raylib.
                 g_mutex_lock(&video->mutex);
+
+                // Frame size is known (or changed)? Create the front buffer and the texture for raylib.
                 if (video->needTexture)
                 {
                     if (video->texture.id != 0) UnloadTexture(video->texture);
 
-                    Image image = { NULL, video->texW, video->texH, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8 };
+                    MemFree(video->front);
+                    video->front = MemAlloc(video->w*video->h*3);
+
+                    Image image = { NULL, video->w, video->h, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8 };
                     video->texture = LoadTextureFromImage(image);
                     video->needTexture = false;
                 }
+
+                // Take the last complete frame, if any.
+                bool newFrame = video->needUpdate;
+                if (newFrame)
+                {
+                    uint8_t* tmp = video->front;
+                    video->front = video->ready;
+                    video->ready = tmp;
+                    video->needUpdate = false;
+                }
+
                 g_mutex_unlock(&video->mutex);
 
                 // Nothing to show until the first frame size is known.
@@ -325,17 +348,11 @@ int main(int argc, char *argv[])
                     if (element->next == NULL) DrawRectangle(video->x-4, video->y-4, video->w+8, video->h+8, DARKBLUE);
                     else DrawRectangle(video->x-4, video->y-4, video->w+8, video->h+8, DARKGRAY);
 
-                    // We have new data from vlc, let's update the texture!
-                    if (video->needUpdate)
-                    {
-                        g_mutex_lock(&video->mutex);
-                        UpdateTexture(video->texture, video->buffer);
-                        video->needUpdate = false;
-                        g_mutex_unlock(&video->mutex);
-                    }
+                    // We have new data from vlc, let's update the texture! No lock: vlc never touches the front buffer.
+                    if (newFrame) UpdateTexture(video->texture, video->front);
 
                     // Draw the current frame
-                    DrawTextureEx(video->texture, (Vector2){video->x, video->y}, 0, video->scale, WHITE);
+                    DrawTexture(video->texture, video->x, video->y, WHITE);
 
                     // Draw the seek bar
                     double p = libvlc_media_player_get_position(video->player);
